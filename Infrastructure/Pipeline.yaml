@@ -72,9 +72,55 @@ Resources:
         Image: aws/codebuild/amazonlinux2-aarch64-standard:1.0
       Source:
         Name: !Ref InfrastructureSourceArtifact
+        Buildspec: /Deployment/InfrastructureBuildspec.yaml
         Type: CodePipeline
       TimeoutInMinutes: 10
 
+  BuildApplication:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: BuildApplication
+      Description: Build To deploythe application to the designed infrastructure
+      ServiceRole:
+        Fn::GetAtt: [ CodeBuildRole, Arn]
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: ArtifactStoreS3Location
+        Name:
+          Fn::Sub: BuildCopyCFN-${AWS::StackName}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:1.0
+      Source:
+        Name: !Ref AppSourceArtifact
+        Buildspec: /Deployment/ApplicationBuildspec.yaml
+        Type: CodePipeline
+      TimeoutInMinutes: 10
+
+  TestingBuildJob:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: TestingBuildJob
+      Description: Job to run automated tests on deployment and destroy the environment
+      ServiceRole:
+        Fn::GetAtt: [ CodeBuildRole, Arn]
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: ArtifactStoreS3Location
+        Name:
+          Fn::Sub: BuildCopyCFN-${AWS::StackName}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:1.0
+      Source:
+        Name: !Ref InfrastructureSourceArtifact
+        Buildspec: /Deployment/TestsBuildspec.yaml
+        Type: CodePipeline
+      TimeoutInMinutes: 10
 
   AppPipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -123,14 +169,47 @@ Resources:
           Name: BuildInfrastructure
           Actions:
             -
-              Name: InportArtifacts
-              -
-                Name: InfrastructureSourceArtifact
-              Name: Build
+              Name: CodeBuild
+              InputArtifacts:
+                - Name: InfrastructureSourceArtifact
               ActionTypeId:
                 Category: Build
                 Owner: AWS
                 Version: 1
-                Provider: AWS CodeBuild
+                Provider: CodeBuild
               Configuration:
-                ProjectName: !Ref BuildInfrastructure
+                ProjectName:
+                  Ref: BuildInfrastructure
+              RunOrder: 1
+        -
+          Name: Deploy application
+          Actions:
+            -
+              Name: CodeBuild
+              InputArtifacts:
+                - Name: AppSourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: BuildApplication
+              RunOrder: 1
+        -
+          Name: RunTests
+          Actions:
+            -
+              Name: CodeBuild
+              InputArtifacts:
+                - Name: AppSourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: TestingBuildJob
+              RunOrder: 1
