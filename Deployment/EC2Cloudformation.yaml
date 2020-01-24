@@ -92,6 +92,10 @@ Resources:
       InstanceType: t2.micro
       SecurityGroups: !Ref 'InstanceSecurityGroup'
       ImageId: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+      Tags:
+        -
+          Key: "Name"
+          Value: "TestInstance"
 
 Outputs:
   VPC:
