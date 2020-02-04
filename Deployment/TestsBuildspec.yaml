@@ -1,0 +1,21 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Installing Python and libraries"
+      - yum install python3 -y
+      - yum install python3 pip3 -y
+      - pip3 install boto3
+      - pip3 install requests
+  pre_build:
+    commands:
+      - echo "Entering Testing Directory"
+      - cd $CODEBUILD_SRC_DIR/Testing
+  build:
+    commands:
+      - echo "Running Test Script"
+      - python3 test.py
+  post_build:
+    commands:
+      - echo "Test stage finished successfully"
