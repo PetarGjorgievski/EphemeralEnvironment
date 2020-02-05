@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: A template for provisioning a Pipeline to orchestrate the Ephemeral environment
+
+Parameters:
+  InfrastructureBranchName:
+    Description: Infrastructure GitHub branch name
+    Type: String
+    Default: master
+  AppBranchName:
+    Description: App GitHub branch name
+    Type: String
+    Default: master
+  InfrastructureRepositoryName:
+    Description: Infrastructure Github repository name
+    Type: String
+    Default: test
+  AppRepositoryName:
+    Description: App GitHub repository name
+    Type: String
+    Default: test
+  GitHubOwner:
+    Type: String
+  GitHubSecret:
+    Type: String
+    NoEcho: true
+  GitHubOAuthToken:
+    Type: String
+    NoEcho: true
+  ApplicationName:
+    Description: CodeDeploy application name
+    Type: String
+    Default: DemoApplication
+  BetaFleet:
+    Description: Fleet configured in CodeDeploy
+    Type: String
+    Default: DemoFleet
+
+Resources:
+  AppPipelineWebhook:
+      Type: 'AWS::CodePipeline::Webhook'
+      Properties:
+        Authentication: GITHUB_HMAC
+        AuthenticationConfiguration:
+          SecretToken: !Ref GitHubSecret
+        Filters:
+          - JsonPath: $.ref
+            MatchEquals: 'refs/heads/{Branch}'
+        TargetPipeline: !Ref AppPipeline
+        TargetAction: SourceAction
+        Name: AppPipelineWebhook
+        TargetPipelineVersion: !GetAtt 
+          - AppPipeline
+          - Version
+        RegisterWithThirdParty: true
+
+  BuildInfrastructure:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: BuildInfrastructure
+      Description: Build To copy CloudFormation templates from infrastructure repository
+      ServiceRole:
+        Fn::GetAtt: [ CodeBuildRole, Arn]
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: ArtifactStoreS3Location
+        Name:
+          Fn::Sub: BuildCopyCFN-${AWS::StackName}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:1.0
+      Source:
+        Name: !Ref InfrastructureSourceArtifact
+        Buildspec: /Deployment/InfrastructureBuildspec.yaml
+        Type: CodePipeline
+      TimeoutInMinutes: 10
+
+  BuildApplication:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: BuildApplication
+      Description: Build To deploythe application to the designed infrastructure
+      ServiceRole:
+        Fn::GetAtt: [ CodeBuildRole, Arn]
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: ArtifactStoreS3Location
+        Name:
+          Fn::Sub: BuildCopyCFN-${AWS::StackName}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:1.0
+      Source:
+        Name: !Ref AppSourceArtifact
+        Buildspec: /Deployment/ApplicationBuildspec.yaml
+        Type: CodePipeline
+      TimeoutInMinutes: 10
+
+  TestingBuildJob:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: TestingBuildJob
+      Description: Job to run automated tests on deployment and destroy the environment
+      ServiceRole:
+        Fn::GetAtt: [ CodeBuildRole, Arn]
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: ArtifactStoreS3Location
+        Name:
+          Fn::Sub: BuildCopyCFN-${AWS::StackName}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:1.0
+      Source:
+        Name: !Ref InfrastructureSourceArtifact
+        Buildspec: /Deployment/TestsBuildspec.yaml
+        Type: CodePipeline
+      TimeoutInMinutes: 10
+
+  AppPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties: 
+      RoleArn:
+        Ref: CodePipelineServiceRole
+      Stages:
+        -
+          Name: Source
+          Actions:
+            -
+              Name: AppSource
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref AppRepositoryName
+                Branch: !Ref AppBranchName
+                OAuthToken: !Ref GitHubOAuthToken
+                PollForSourceChanges: false
+              OutputArtifacts:
+                -
+                  Name: AppSourceArtifact
+              RunOrder: 1
+            -
+              Name: InfrastructureSource
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref InfrastructureRepositoryName
+                Branch: !Ref InfrastructureBranchName
+                OAuthToken: !Ref GitHubOAuthToken
+                PollForSourceChanges: false
+              OutputArtifacts:
+                -
+                  Name: InfrastructureSourceArtifact
+              RunOrder: 1
+        -
+          Name: BuildInfrastructure
+          Actions:
+            -
+              Name: CodeBuild
+              InputArtifacts:
+                - Name: InfrastructureSourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: BuildInfrastructure
+              RunOrder: 1
+        -
+          Name: Deploy application
+          Actions:
+            -
+              Name: CodeBuild
+              InputArtifacts:
+                - Name: AppSourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: BuildApplication
+              RunOrder: 1
+        -
+          Name: RunTests
+          Actions:
+            -
+              Name: CodeBuild
+              InputArtifacts:
+                - Name: AppSourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: TestingBuildJob
+              RunOrder: 1
